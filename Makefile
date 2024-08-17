@@ -1,6 +1,4 @@
-exec:
-	as -o ./build/boot.o ./boot/boot.s
-	ld -Ttext 0x7C00 --oformat binary -o ./build/boot.bin ./build/boot.o
+exec: img
 	qemu-system-x86_64 -drive format=raw,file=./build/boot.bin
 
 img:
@@ -20,4 +18,4 @@ filesys:
 	# mcopy -i ./build/filesys.img ./build/kernel.bin "::kernel"
 
 clean:
-	rm -f ./build/*.o ./build/*.bin
+	rm -f ./build/*.o ./build/*.bin ./build/*.img

@@ -15,15 +15,15 @@ _start:
      * To make bootloader simple, we make all processor-defined segments
      * to use 0.
      */
-    movw $0, %ax                // we cannot assign immediate directly
+    movw $0, %ax                /* we cannot assign immediate directly */
     movw %ax, %ds
     movw %ax, %ss
-    movb %dl, (boot_disk)       // saves the boot disk
+    movb %dl, (boot_disk)       /* saves the boot disk */
     
     /* ************************************************************
      * *                     Setting Up Stack                     *
      * ************************************************************ */
-    movw $0x7C00, %bp           // call pushes %eip, ret pops it
+    movw $0x7C00, %bp           /* call pushes %eip, ret pops it */
     movw %bp, %sp
 
     movw $boot_message, %bx     # gives information
