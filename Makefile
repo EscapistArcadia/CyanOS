@@ -10,8 +10,10 @@ debug:
 	as --gstabs -o $(BUILD_DIR)/boot.o $(BOOT_DIR)/boot.s
 	ld -Ttext 0x7C00 --oformat binary -o $(BUILD_DIR)/boot.bin $(BUILD_DIR)/boot.o
 	ld -Ttext 0x7C00 -o $(BUILD_DIR)/boot.elf $(BUILD_DIR)/boot.o
-	as -o $(BUILD_DIR)/kernel.o $(KERNEL_DIR)/main.s
-	objcopy -O binary $(BUILD_DIR)/kernel.o $(BUILD_DIR)/cyan.bin
+	as --gstabs -o $(BUILD_DIR)/cyan.o $(KERNEL_DIR)/main.s
+	ld -Ttext 0xE000 --oformat binary -o $(BUILD_DIR)/cyan.bin $(BUILD_DIR)/cyan.o
+	ld -Ttext 0xE000 -o $(BUILD_DIR)/cyan.elf $(BUILD_DIR)/cyan.o
+	# objcopy -O binary $(BUILD_DIR)/kernel.o $(BUILD_DIR)/cyan.bin
 	make filesys
 	rm $(BUILD_DIR)/*.o
 	qemu-system-x86_64 -drive format=raw,file=$(BUILD_DIR)/filesys.img -S -s

@@ -3,44 +3,48 @@
 .code16
 .globl _start
 
-jmp _start
-
 /* 
-* ************************************************************
-* *                  File System Inforation                  *
-* ************************************************************
-* 
-* The bootloader loaded by BIOS is originally in a partition of
-* the hard disk. It not only stores bootloader, but also stores
-* basic information about the entire file system. Therefore, to
-* successfully load the kernel from the file system, we need to
-* contain these data.
-*
-* Temporarily, the OS relies on the FAT12 system, which is out-
-* dated, but I do not read much longer documentation. In the future,
-* I'll support more file systems.
-*/
+ * ************************************************************
+ * *                  File System Inforation                  *
+ * ************************************************************
+ * 
+ * The bootloader loaded by BIOS is originally in a partition of
+ * the hard disk. It not only stores bootloader, but also stores
+ * basic information about the entire file system. Therefore, to
+ * successfully load the kernel from the file system, we need to
+ * contain these data.
+ *
+ * Temporarily, the OS relies on the FAT12 system, which is out-
+ * dated, but I do not read much longer documentation. In the future,
+ * I'll support more file systems.
+ * 
+ * The boot sector indicates FAT12 information starting at 0x03.
+ * The first 3 sectors are for jmp instruction.
+ */
+jmp _start      /* binary: 0xE9, 0x__, 0x90 */
+nop
 
-.org 0x0B      /* the first 11 bytes is ignored by FAT 12 */
 fat12_info:
-    .word 512   /* bytes per sector */
-    .byte 1     /* sector per cluster */
-    .word 1     /* reserved sectors count */
-    .byte 2     /* count of tables, each takes 9 sectors */
-    .word 0xE0  /* max root directories count, 0xE0 is the max */
-    .word 2880  /* total sector count */
-    .byte 0xF0  /* ignored */                   /* WHY */
-    .word 9     /* FAT length in sector */      /* WHY */
-    .word 18    /* track length in sector */    /* WHY */
-    .word 2     /* head count */                /* WHY */
-    .long 0     /* ignored */
-    .long 2880  /* sector count */
-    .word 0     /* ignored */
-    .byte 0x29  /* boot signature */
-    .long 0xECEBECEB        /* volume label */
-    .ascii "CyanOSFat "    /* must be 11 bytes, whitespace */
-    .byte 0
-
+    fat12_oem_name:                 .ascii "CyanFAT "   /* 8 bytes */
+    fat12_bytes_per_sector:         .word 512
+    fat12_sectors_per_cluster:      .byte 1
+    fat12_reserved_sector_count:    .word 1
+    fat12_fat_table_count:          .byte 2
+    fat12_root_directory_count:     .word 0x00E0
+    fat12_total_sector_count_16:    .word 2880
+    fat12_media_mode:               .byte 0xF0
+    fat12_fat_table_length:         .word 9
+    fat12_sectors_per_track:        .word 18
+    fat12_heads_per_cylindar:       .word 2
+    fat12_hidden_sector_count:      .long 0
+    fat12_total_sector_count:       .long 2880
+    fat12_drive_number:             .byte 0x00
+    fat12_reserved:                 .byte 0x00
+    fat12_boot_signature:           .byte 0x29
+    fat12_volume_serial_number:     .long 0x66CC0BD0
+    fat12_volume_label:             .ascii "NO NAME    "
+    .byte 0x00
+    
 _start:
     /* 
      * ************************************************************
@@ -67,9 +71,6 @@ _start:
     movw $0x7C00, %bp           /* call pushes %eip, ret pops it */
     movw %bp, %sp
 
-    movw %dx, %bx
-    call print_hex
-    
     /* 
      * ************************************************************
      * *               Load Kernel From File System               *
@@ -81,19 +82,21 @@ _start:
      */
 read_sectors:
     movb $0x02, %ah             /* Opcode for read sector(s) from hard disk */
-    movb $13, %al               /* read all root directories */
+    movb $33, %al               /* count of sectors */
     movb $0, %ch                /* cylinder index */
-    movb $20, %cl               /* sector index of root directories */
+    movb $2, %cl                /* all sectors from fat to root directories */
     movb $0, %dh                /* head index */
     movb boot_disk, %dl         /* dl = drive index, given by BIOS */
-    movw $0x8000, %bx           /* es:bx = destination memory */
+    movw fat12_load_addr, %bx  /* es:bx = destination memory */
     int $0x13                   /* call routines */
-    jc read_disk_err
+    jc read_disk_err            /* CF = 1 -> error! checks AH, AL */
 
 find_kernel:                    /* compares extension and file name */
     pushfl
-    popw %ax                    /* saves the flag */
-    cld
+    cld                         /* forces increment in string conversion */
+    movw fat12_root_directory_offset, %ax
+    mulw fat12_bytes_per_sector
+    addw %ax, %bx               /* bx = root directory entry */
 
 find_kernel_ext:
     cmpb $0xE5, (%bx)           /* current dentry is free */
@@ -117,8 +120,30 @@ find_kernel_iter:
     jmp find_kernel_ext
 
 load_kernel:
-    movw $kernel_found_message, %bx
-    call print_message
+load_kernel_first_block:
+    /* bx = kernel dentry in root */
+    movw 26(%bx), %si
+    
+    movb $0x02, %ah
+    movb $1, %al                /* count of sectors */
+    call db_lba_to_chs          /* si -> int $0x13 */
+    movb boot_disk, %dl         /* dl = drive index, given by BIOS */
+    movw $0xE000, %bx           /* es:bx = destination memory */
+    int $0x13
+    jc read_disk_err
+
+switch_mode:
+    /* ************************************************************
+     * *              Entering 32-bit Protected Mode              *
+     * ************************************************************ */
+    cli
+    lgdt gdt32
+
+    movl %cr0, %eax
+    orl $1, %eax
+    movl %eax, %cr0
+
+    ljmp $8, $0xE000
 
 halt:
     hlt
@@ -127,11 +152,6 @@ halt:
 read_disk_err:
     movw $read_disk_err_message, %bx
     call print_message
-    movw $0, %bx
-    movb %ah, %bl
-    call print_hex
-    movb %al, %bl
-    call print_hex
     jmp halt
 
 find_disk_err:
@@ -162,50 +182,43 @@ print_message_end:
     ret
 
 /**
- * @brief prints the hex format of number in %bx
- * 
- * @param %bx the input number
- * @return none
+ * converts lba index at %si to chs
+ *
+ * @param %si the lba index
+ * @param %dh output head index
+ * @param %cx[5:0] sector index
+ * @param %{cx[7,6], cx[15:8]} cylindar index
  */
-print_hex:
+db_lba_to_chs:
+    addw fat12_data_block_offset, %si
     pushw %ax
-    pushw %di
-    
-    movb $0x0E, %ah
-    movb $'0', %al
-    int $0x10
-    movb $'x', %al
-    int $0x10
+    pushw %bx
+    pushfl
+    cld
 
-    movw %bx, %di
-    andw $0xF000, %di
-    shr $12, %di
-    movb hex_map(%di), %al
-    int $0x10
+    movw %si, %ax
+    movw $1008, %bx
+    divw %bx            /* quotient: cylindar */
+    pushw %ax           /* stores cylindar index */
+    andw $0, %dx
 
-    movw %bx, %di
-    andw $0x0F00, %di
-    shr $8, %di
-    movb hex_map(%di), %al
-    int $0x10
+    movw %si, %ax
+    movw $63, %bx
+    divw %bx            /* remainder(%dx) + 1: sector */
+    incw %dx
 
-    movw %bx, %di
-    andw $0x00F0, %di
-    shr $4, %di
-    movb hex_map(%di), %al
-    int $0x10
+    andw $0b1111, %ax   /* quotient(%ax) % 16: head */
+    movb %al, %dh
 
-    movw %bx, %di
-    andw $0x000F, %di
-    movb hex_map(%di), %al
-    int $0x10
+    popw %bx
+    movb %bl, %ch
+    andb $0b00000011, %bh
+    shlb $6, %bh
+    movb %bh, %cl
+    orb %dl, %cl
 
-    movb $0x0D, %al
-    int $0x10
-    movb $0x0A, %al
-    int $0x10
-
-    popw %di
+    popfl
+    popw %bx
     popw %ax
     ret
 
@@ -233,32 +246,45 @@ kernel_found_message:
     .byte 0x0A
     .byte 0x00
 
-hex_map:
-    .ascii "0123456789ABCDEF"
-
 kernel_name:
     .ascii "CYAN"
 kernel_extension:
     .ascii "EXE"
 
+fat12_fat_table_offset:
+    .word 0
+
+fat12_root_directory_offset:
+    .word 18
+
+fat12_data_block_offset:
+    .word 31
+
+fat12_load_addr:
+    .word 0x7E00
+
 boot_disk:
     .byte 0x00
-
 
 .align 4
 dentry_size:
     .word 32
-gdt:
-    .word gdt_end - gdt_begin - 1
-    .long gdt_begin
+gdt32:
+    .word gdt32_end - gdt32_begin - 1
+    .long gdt32_begin
 
 .align 16
-gdt_begin:
-    .quad 0
-    .quad 0
-    .quad 0
-gdt_end:
+gdt32_begin:
+    .quad 0                     /* the first entry must be null */
+
+gdt32_segments:                 /* segmentation is out-dated, and should retire immediately */
+    .quad 0x00CF9A000000FFFF    /* why code and data segment is separated? */
+    .quad 0x00CF92000000FFFF
+    .quad 0x00CFFA000000FFFF    /* user level */
+    .quad 0x00CFF2000000FFFF
+
+gdt32_end:
     
 .org 0x1FE
     .byte 0x55
-    .byte 0xaa
+    .byte 0xAA

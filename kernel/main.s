@@ -1,6 +1,8 @@
-.code16
+.code32
 
 entry:
     movw $0x45, 0xB8000
     movw $0x07, 0xB8001
-    ret
+
+spin:
+    jmp spin
