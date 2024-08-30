@@ -14,37 +14,47 @@
  * successfully load the kernel from the file system, we need to
  * contain these data.
  *
- * Temporarily, the OS relies on the FAT12 system, which is out-
- * dated, but I do not read much longer documentation. In the future,
- * I'll support more file systems.
+ * Temporarily, the OS relies on the FAT32 system, which is out-
+ * dated, but I do not want to read much longer documentation.
+ * In the future, I'll support more file systems.
  * 
- * The boot sector indicates FAT12 information starting at 0x03.
+ * The boot sector indicates FAT32 information starting at 0x03.
  * The first 3 sectors are for jmp instruction.
  */
+fat32_jump_boot:
 jmp _start      /* binary: 0xE9, 0x__, 0x90 */
 nop
 
-fat12_info:
-    fat12_oem_name:                 .ascii "CyanFAT "   /* 8 bytes */
-    fat12_bytes_per_sector:         .word 512
-    fat12_sectors_per_cluster:      .byte 1
-    fat12_reserved_sector_count:    .word 1
-    fat12_fat_table_count:          .byte 2
-    fat12_root_directory_count:     .word 0x00E0
-    fat12_total_sector_count_16:    .word 2880
-    fat12_media_mode:               .byte 0xF0
-    fat12_fat_table_length:         .word 9
-    fat12_sectors_per_track:        .word 18
-    fat12_heads_per_cylindar:       .word 2
-    fat12_hidden_sector_count:      .long 0
-    fat12_total_sector_count:       .long 2880
-    fat12_drive_number:             .byte 0x00
-    fat12_reserved:                 .byte 0x00
-    fat12_boot_signature:           .byte 0x29
-    fat12_volume_serial_number:     .long 0x66CC0BD0
-    fat12_volume_label:             .ascii "NO NAME    "
-    .byte 0x00
-    
+fat32_info:
+    fat32_oem_name:                 .ascii "MSWIN4.1"   /* 8 bytes */
+    fat32_bytes_per_sector:         .word 512
+    fat32_sectors_per_cluster:      .byte 1
+    fat32_reserved_sector_count:    .word 32            /* 1 for 12 and 16 */
+    fat32_fat_table_count:          .byte 2             /* fixed */
+    fat32_root_directory_count:     .word 0             /* fixed for 32 */
+    fat32_total_sector_count_16:    .word 0
+    fat32_media_mode:               .byte 0xF8          /* removable */
+    fat32_fat_table_length_16:      .word 0
+    fat32_sectors_per_track:        .word 63
+    fat32_heads_per_cylindar:       .word 16
+    fat32_hidden_sector_count:      .long 0
+    fat32_total_sector_count:       .long 262144
+    fat32_fat_table_length:         .long 2048
+    fat32_extended_flags:           .word 0x0000
+    fat32_version:                  .word 0x0000
+    fat32_root_cluster:             .long 2
+    fat32_info_block:               .word 1
+    fat32_backup_boot_sector:       .word 6
+    fat32_bs_reserved:              .long 0
+                                    .long 0
+                                    .long 0
+    fat32_drive_number:             .byte 0x80
+    fat32_bpb_reserved:             .byte 0x00
+    fat32_boot_signature:           .byte 0x29
+    fat32_volume_serial_number:     .long 0x66CC0BD0
+    fat32_volume_label:             .ascii "NO NAME    "
+    fat32_file_system_type:         .ascii "FAT32   "
+
 _start:
     /* 
      * ************************************************************
@@ -58,7 +68,7 @@ _start:
      * To make bootloader simple, we make all processor-defined segments
      * to use 0.
      */
-    movw $0, %ax                /* we cannot assign immediate directly */
+    xorw %ax, %ax               /* we cannot assign immediate directly */
     movw %ax, %ds
     movw %ax, %es
     movw %ax, %ss
@@ -68,6 +78,7 @@ _start:
      * *                     Setting Up Stack                     *
      * ************************************************************ */
     /* see https://wiki.osdev.org/Memory_Map_(x86), NOT RANDOMLY SELECTED */
+setup_stack:
     movw $0x7C00, %bp           /* call pushes %eip, ret pops it */
     movw %bp, %sp
 
@@ -80,83 +91,98 @@ _start:
      * stored in the root directory of the file system. We have to
      * traverse it and load if it returns true.
      */
-read_sectors:
-    movb $0x02, %ah             /* Opcode for read sector(s) from hard disk */
-    movb $33, %al               /* count of sectors */
-    movb $0, %ch                /* cylinder index */
-    movb $2, %cl                /* all sectors from fat to root directories */
-    movb $0, %dh                /* head index */
-    movb boot_disk, %dl         /* dl = drive index, given by BIOS */
-    movw fat12_load_addr, %bx  /* es:bx = destination memory */
-    int $0x13                   /* call routines */
-    jc read_disk_err            /* CF = 1 -> error! checks AH, AL */
+read_file_system_info:
+    xorw %dx, %dx
+    movw $1, %ax                /* starting sector = #1 */
+    movb %al, %cl               /* count = 1 */
+    movw $0x7E00, %bx           /* dest = 0x7E00 */
+    call read_disk
 
-find_kernel:                    /* compares extension and file name */
-    pushfl
-    cld                         /* forces increment in string conversion */
-    movw fat12_root_directory_offset, %ax
-    mulw fat12_bytes_per_sector
-    addw %ax, %bx               /* bx = root directory entry */
+read_root_dentry:
+    xorw %dx, %dx               /* starting = 32 + 2048 * 2 */
+    movw fat32_reserved_sector_count, %ax
+    addw fat32_fat_table_length, %ax
+    addw fat32_fat_table_length, %ax
 
-find_kernel_ext:
-    cmpb $0xE5, (%bx)           /* current dentry is free */
-    je find_kernel_iter
-    cmpb $0x00, (%bx)           /* reaches the end */
-    je kernel_not_found_err_message
-    movw $3, %cx                /* length of comparision */
-    leaw 8(%bx), %si
-    movw $kernel_extension, %di
-    repe cmpsb
-    jnz find_kernel_iter        /* not equal, next iteration */
+traverse_root_dentry:
+    pushw %dx
+    pushw %ax
+    movb $16, %cl               /* count = 16 */
+    movw $0xE000, %bx           /* dest = 0x8000 */
+    call read_disk
 
-find_kernel_name:
+    cmpb $0x00, (%bx)           /* we reached the end */
+    je kernel_not_found
+    cmpb $0xE5, (%bx)           /* this dentry is free */
+    je traverse_next_dentry
+
+check_file_ext:
+    movw %bx, %si
+    addw $8, %si                /* %ds:%si = dentry->ext */
+    movw $kernel_extension, %di /* %es:%di = "exe" */
+    movw $3, %cx
+    rep cmpsb                   /* equivalent to: strncmp(%ds:%si, %es:%di, %cx) */
+    jnz traverse_next_dentry    /* ZF is set if equal */
+
+check_file_name:
     movw %bx, %si
     movw $kernel_name, %di
-    repe cmpsb
-    jz load_kernel
-    
-find_kernel_iter:
-    addw $0x20, %bx             /* next dentry */
-    jmp find_kernel_ext
+    movw $4, %cx
+    rep cmpsb                   /* strncmp(dentry->name, "CYAN", 4) */
+    jnz traverse_next_dentry
+
+found_kernel:                   /* enter 32bit mode */
+    lgdt gdt32                  /* load it, to enter 32bit mode */
+
+load_fat_table:
+    movw 20(%bx), %dx           /* high word of the first cluster index */
+    movw 26(%bx), %ax           /* low word */
+    /* TODO: next blocks */
 
 load_kernel:
-load_kernel_first_block:
-    /* bx = kernel dentry in root */
-    movw 26(%bx), %si
-    
-    movb $0x02, %ah
-    movb $1, %al                /* count of sectors */
-    call db_lba_to_chs          /* si -> int $0x13 */
-    movb boot_disk, %dl         /* dl = drive index, given by BIOS */
-    movw $0xE000, %bx           /* es:bx = destination memory */
-    int $0x13
-    jc read_disk_err
+    addw $4126, %ax
+    movb $1, %cl
+    movw $0, %bx
+    movw $0x3000, %di
+    movw %di, %es
+    call read_disk
 
-switch_mode:
-    /* ************************************************************
-     * *              Entering 32-bit Protected Mode              *
-     * ************************************************************ */
     cli
-    lgdt gdt32
-
     movl %cr0, %eax
     orl $1, %eax
-    movl %eax, %cr0
+    movl %eax, %cr0             /* enters protected mode */
 
-    ljmp $8, $0xE000
+    movw $16, %di
+    movw %di, %ds
+    movw %di, %es
+    movw %di, %fs
+    movw %di, %gs
+    movw %di, %ss
+
+    ljmp $8, $protected_mode
+
+.code32
+protected_mode:
+    movl $0x30000, %esi
+    movl $0x400000, %edi
+    movl $128, %ecx
+    rep movsl
+    jmp 0x400000
+    jmp halt
+
+.code16
+traverse_next_dentry:
+    addw $32, %bx
+    jo traverse_next_group
+    jmp check_file_ext
+
+traverse_next_group:
+    popw %si
+    addw $16, %si
+    jmp traverse_root_dentry
 
 halt:
     hlt
-    jmp halt
-
-read_disk_err:
-    movw $read_disk_err_message, %bx
-    call print_message
-    jmp halt
-
-find_disk_err:
-    movw $kernel_not_found_err_message, %bx
-    call print_message
     jmp halt
 
 /**
@@ -182,86 +208,77 @@ print_message_end:
     ret
 
 /**
- * converts lba index at %si to chs
+ * read_disk:
+ * @brief read specified amount of sectors from a certain sector
+ *        and write to certain address
  *
- * @param %si the lba index
- * @param %dh output head index
- * @param %cx[5:0] sector index
- * @param %{cx[7,6], cx[15:8]} cylindar index
+ * @param %dx:%ax 32bit LBA index
+ * @param %cl     8 bit count
+ * @param %es:%bx destination
+ *
+ * @return %dh = Head
+ *         {%cx[7:6], %cx[15:8]} = Cylindar
+ *         {%cx[5:0]} = Sector
  */
-db_lba_to_chs:
-    addw fat12_data_block_offset, %si
-    pushw %ax
+read_disk:
+    pushw %cx
+
+/**
+ * lba_to_chs:
+ * @brief transfer LBA format to CHS format
+ *
+ * @param %dx:%ax 32bit LBA index
+ *
+ * @return %dh = Head
+ *         {%cx[7:6], %cx[15:8]} = Cylindar
+ *         {%cx[5:0]} = Sector
+ */
+lba_to_chs:
     pushw %bx
-    pushfl
-    cld
 
-    movw %si, %ax
-    movw $1008, %bx
-    divw %bx            /* quotient: cylindar */
-    pushw %ax           /* stores cylindar index */
-    andw $0, %dx
+    movw fat32_sectors_per_track, %si
+    divw %si                    /* %ax = quotient, %dx = remainder */
+    addw $1, %dx
+    andw $0b111111, %dx         /* sector index */
+    movw %dx, %cx               /* %cx[5:0] = Sector */
 
-    movw %si, %ax
-    movw $63, %bx
-    divw %bx            /* remainder(%dx) + 1: sector */
-    incw %dx
+    xorw %dx, %dx               /* clears the high 16 bits */
+    movw fat32_heads_per_cylindar, %si
+    divw %si
+    shlw $8, %dx                /* %dh = Head */
 
-    andw $0b1111, %ax   /* quotient(%ax) % 16: head */
-    movb %al, %dh
+    movb %al, %ch               /* %ch = cylindar[7:0] */
+    movb %ah, %al
+    shlb $6, %al
+    orb %al, %cl                /* %cl[7:6] = %ch[7:6] = cylindar[9:8] */
 
+    # ret
+
+read_sectors:
+    pushw %si
+    movw %sp, %si
+    movb 4(%si), %al
+    movb $2, %ah
+    popw %si
     popw %bx
-    movb %bl, %ch
-    andb $0b00000011, %bh
-    shlb $6, %bh
-    movb %bh, %cl
-    orb %dl, %cl
-
-    popfl
-    popw %bx
-    popw %ax
+    movb boot_disk, %dl
+    addw $2, %sp
+    int $0x13
+    jc kernel_not_found
     ret
 
-boot_message:
-    .ascii "OS is booting, please wait ^_^"
-    .byte 0x0D
-    .byte 0x0A
-    .byte 0x00
-
-read_disk_err_message:
-    .ascii "Failed to read hard disk!"
-    .byte 0x0D
-    .byte 0x0A
-    .byte 0x00
-
-kernel_not_found_err_message:
-    .ascii "Cannot find kernel!"
-    .byte 0x0D
-    .byte 0x0A
-    .byte 0x00
-
-kernel_found_message:
-    .ascii "Kernel Found!"
-    .byte 0x0D
-    .byte 0x0A
-    .byte 0x00
+kernel_not_found:
+    movw $kernel_not_found_message, %bx
+    call print_message
+    hlt
 
 kernel_name:
     .ascii "CYAN"
 kernel_extension:
     .ascii "EXE"
 
-fat12_fat_table_offset:
-    .word 0
-
-fat12_root_directory_offset:
-    .word 18
-
-fat12_data_block_offset:
-    .word 31
-
-fat12_load_addr:
-    .word 0x7E00
+kernel_not_found_message:
+    .string "Kernel not found!\r\n"
 
 boot_disk:
     .byte 0x00
@@ -279,12 +296,15 @@ gdt32_begin:
 
 gdt32_segments:                 /* segmentation is out-dated, and should retire immediately */
     .quad 0x00CF9A000000FFFF    /* why code and data segment is separated? */
-    .quad 0x00CF92000000FFFF
-    .quad 0x00CFFA000000FFFF    /* user level */
-    .quad 0x00CFF2000000FFFF
+    .quad 0x00CF92000000FFFF    /* kernel data */
+    .quad 0x00CFFA000000FFFF    /* user code */
+    .quad 0x00CFF2000000FFFF    /* user data */
 
 gdt32_end:
+
+fat32_data_block_offset:
+    .word 4126
     
-.org 0x1FE
+.org 0x1FE                      /* indicating the partition is bootable */
     .byte 0x55
     .byte 0xAA
