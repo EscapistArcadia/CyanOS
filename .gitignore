@@ -1,4 +1,5 @@
 ./build/
+./gnu-efi/
 *.o
 *.bin
 *.img

@@ -1,42 +1,41 @@
-arch ?= x86_64
+# architecture specification
+ARCH    	:= x86_64
 
-BUILD_DIR = ./build
-BOOT_DIR = ./boot#/$(arch)
-KERNEL_DIR = ./kernel
+# directories specification
+BOOT_DIR    := ./boot
+BUILD_DIR   := ./build
 
-all: bootloader image filesys
+EFI_DIR		:= ./gnu-efi
+EFI_ARCH	:= $(EFI_DIR)/$(ARCH)
+EFI_INCLUDE := $(EFI_DIR)/inc
 
-debug:
-	as --gstabs -o $(BUILD_DIR)/boot.o $(BOOT_DIR)/boot.s
-	ld -Ttext 0x7C00 --oformat binary -o $(BUILD_DIR)/boot.bin $(BUILD_DIR)/boot.o
-	ld -Ttext 0x7C00 -o $(BUILD_DIR)/boot.elf $(BUILD_DIR)/boot.o
-	as --gstabs -o $(BUILD_DIR)/cyan.o $(KERNEL_DIR)/main.s
-	ld -Ttext 0x30000 --oformat binary -o $(BUILD_DIR)/cyan.bin $(BUILD_DIR)/cyan.o
-	ld -Ttext 0x30000 -o $(BUILD_DIR)/cyan.elf $(BUILD_DIR)/cyan.o
-	# objcopy -O binary $(BUILD_DIR)/kernel.o $(BUILD_DIR)/cyan.bin
-	make filesys
-	rm $(BUILD_DIR)/*.o
-	qemu-system-x86_64 -drive format=raw,file=$(BUILD_DIR)/filesys.img -S -s
+# compiler specification
+CC      := gcc
+LD		:= ld
+
+CFLAGS  += -fpic -ffreestanding -fno-stack-protector -fno-stack-check -fshort-wchar -mno-red-zone -maccumulate-outgoing-args -I $(EFI_INCLUDE)
+
+LDFLAGS	+= -shared -Bsymbolic -L $(EFI_ARCH)/lib/ -L $(EFI_ARCH)/gnuefi/ -T $(EFI_DIR)/gnuefi/elf_$(ARCH)_efi.lds $(EFI_DIR)/$(ARCH)/gnuefi/crt0-efi-$(ARCH).o
+
+# file specification
+BOOT_SRCS += $(wildcard ./boot/x86_64/*.c)
+
+all: bootloader filesys
 
 bootloader:
-	as -o $(BUILD_DIR)/boot.o $(BOOT_DIR)/boot.s
-	ld -Ttext 0x7C00 --oformat binary -o $(BUILD_DIR)/boot.bin $(BUILD_DIR)/boot.o
-	rm $(BUILD_DIR)/*.o
-
-image:
-	as -o $(BUILD_DIR)/kernel.o $(KERNEL_DIR)/main.s
-	objcopy -O binary $(BUILD_DIR)/kernel.o $(BUILD_DIR)/cyan.bin
-	rm $(BUILD_DIR)/*.o
+	$(CC) $(CFLAGS) -c ./boot/x86_64/main.c -o ./build/main.o
+	$(LD) $(LDFLAGS) ./build/main.o -o ./build/main.so -lgnuefi -lefi # these two flags have to be at the end, why?
+	objcopy -j .text -j .sdata -j .data -j .rodata -j .dynamic -j .dynsym  -j .rel -j .rela -j .rel.* -j .rela.* -j .reloc --target efi-app-x86_64 --subsystem=10 ./build/main.so ./build/main.efi
 
 filesys:
-	dd if=/dev/zero of=$(BUILD_DIR)/filesys.img bs=512 count=262144
+	dd if=/dev/zero of=$(BUILD_DIR)/filesys.img bs=512 count=524288
 	mkfs.fat -F 32 $(BUILD_DIR)/filesys.img
-	dd if=$(BUILD_DIR)/boot.bin of=$(BUILD_DIR)/filesys.img conv=notrunc
-	dd if=$(BUILD_DIR)/boot.bin of=$(BUILD_DIR)/filesys.img seek=6 conv=notrunc
-	mcopy -i $(BUILD_DIR)/filesys.img $(BUILD_DIR)/cyan.bin "::CYAN.EXE"
+	mmd -i $(BUILD_DIR)/filesys.img ::/EFI
+	mmd -i $(BUILD_DIR)/filesys.img ::/EFI/BOOT
+	mcopy -i $(BUILD_DIR)/filesys.img $(BUILD_DIR)/main.efi ::/EFI/BOOT/BOOTX64.EFI
 
-exec:
-	qemu-system-x86_64 -drive format=raw,file=$(BUILD_DIR)/filesys.img
+run:
+	qemu-system-$(ARCH) -drive format=raw,file=$(BUILD_DIR)/filesys.img -bios /usr/share/ovmf/OVMF.fd 
 
 clean:
 	rm -rf $(BUILD_DIR)/*
