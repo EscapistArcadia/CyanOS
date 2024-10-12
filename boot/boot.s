@@ -92,24 +92,20 @@ setup_stack:
      * traverse it and load if it returns true.
      */
 read_file_system_info:
-    xorw %dx, %dx
-    movw $1, %ax                /* starting sector = #1 */
-    movb %al, %cl               /* count = 1 */
+    movl $1, %esi               /* start from sector #1 */
+    movb $1, %cl                /* for fs info sector */
     movw $0x7E00, %bx           /* dest = 0x7E00 */
-    call read_disk
+    call read_disk              /* 0x7C00 - 0x7E00: file system info sector */
 
-read_root_dentry:
-    xorw %dx, %dx               /* starting = 32 + 2048 * 2 */
-    movw fat32_reserved_sector_count, %ax
-    addw fat32_fat_table_length, %ax
-    addw fat32_fat_table_length, %ax
+read_root_dentry:               /* %esi = 32 + 2048 * 2 */
+    movzwl fat32_reserved_sector_count, %esi
+    addl fat32_fat_table_length, %esi
+    addl fat32_fat_table_length, %esi
 
 traverse_root_dentry:
-    pushw %dx
-    pushw %ax
-    movb $16, %cl               /* count = 16 */
-    movw $0xE000, %bx           /* dest = 0x8000 */
-    call read_disk
+    movb $8, %cl               /* count = 16 */
+    movw $0xF000, %bx           /* dest = 0xE000 */
+    call read_disk              /* 0xE000 - 0xFFFF: root dentries */
 
     cmpb $0x00, (%bx)           /* we reached the end */
     je kernel_not_found
@@ -117,69 +113,46 @@ traverse_root_dentry:
     je traverse_next_dentry
 
 check_file_ext:
-    movw %bx, %si
-    addw $8, %si                /* %ds:%si = dentry->ext */
-    movw $kernel_extension, %di /* %es:%di = "exe" */
+    leaw 8(%bx), %si
+    movw $kernel_extension, %di /* %es:%di = "EXE" */
     movw $3, %cx
-    rep cmpsb                   /* equivalent to: strncmp(%ds:%si, %es:%di, %cx) */
+    repe cmpsb                  /* equivalent to: strncmp(%ds:%si, %es:%di, %cx) */
     jnz traverse_next_dentry    /* ZF is set if equal */
 
 check_file_name:
     movw %bx, %si
     movw $kernel_name, %di
     movw $4, %cx
-    rep cmpsb                   /* strncmp(dentry->name, "CYAN", 4) */
+    repe cmpsb                  /* strncmp(dentry->name, "CYAN", 4) */
     jnz traverse_next_dentry
 
-found_kernel:                   /* enter 32bit mode */
-    lgdt gdt32                  /* load it, to enter 32bit mode */
+    jmp found_kernel
 
-load_fat_table:
-    movw 20(%bx), %dx           /* high word of the first cluster index */
-    movw 26(%bx), %ax           /* low word */
-    /* TODO: next blocks */
-
-load_kernel:
-    addw $4126, %ax
-    movb $1, %cl
-    movw $0, %bx
-    movw $0x3000, %di
-    movw %di, %es
-    call read_disk
-
-    cli
-    movl %cr0, %eax
-    orl $1, %eax
-    movl %eax, %cr0             /* enters protected mode */
-
-    movw $16, %di
-    movw %di, %ds
-    movw %di, %es
-    movw %di, %fs
-    movw %di, %gs
-    movw %di, %ss
-
-    ljmp $8, $protected_mode
-
-.code32
-protected_mode:
-    movl $0x30000, %esi
-    movl $0x400000, %edi
-    movl $128, %ecx
-    rep movsl
-    jmp 0x400000
-    jmp halt
-
-.code16
 traverse_next_dentry:
-    addw $32, %bx
-    jo traverse_next_group
+    addw fat32_dentry_size, %bx
+    jc traverse_next_group      /* 0x10000 -> 0x0, means we reached the end */
     jmp check_file_ext
 
 traverse_next_group:
-    popw %si
-    addw $16, %si
+    addl $8, %esi               /* read the next 16 root dentries sectors */
     jmp traverse_root_dentry
+
+/* good if we reach here, %ebx is the dentry */
+found_kernel:
+    movl $0xA000, %ecx          /* %ecx = kernel address */
+
+    movzwl 20(%bx), %esi
+    shll $16, %esi
+    movw 26(%bx), %si           /* %esi = dentry->first_cluster */
+    
+read_kernel_executable:
+    addl fat32_data_block_offset, %esi
+    movb $1, %cl
+    movl %ecx, %ebx
+    call read_disk
+
+read_fat_table:
+
 
 halt:
     hlt
@@ -212,7 +185,7 @@ print_message_end:
  * @brief read specified amount of sectors from a certain sector
  *        and write to certain address
  *
- * @param %dx:%ax 32bit LBA index
+ * @param %esi    32bit LBA index
  * @param %cl     8 bit count
  * @param %es:%bx destination
  *
@@ -221,19 +194,25 @@ print_message_end:
  *         {%cx[5:0]} = Sector
  */
 read_disk:
+    pushl %esi
+    pushw %ax
+    pushw %dx
     pushw %cx
 
 /**
  * lba_to_chs:
  * @brief transfer LBA format to CHS format
  *
- * @param %dx:%ax 32bit LBA index
+ * @param %esi 32bit LBA index
  *
  * @return %dh = Head
  *         {%cx[7:6], %cx[15:8]} = Cylindar
  *         {%cx[5:0]} = Sector
  */
 lba_to_chs:
+    movw %si, %ax
+    shrl $16, %esi
+    movw %si, %dx
     pushw %bx
 
     movw fat32_sectors_per_track, %si
@@ -251,26 +230,29 @@ lba_to_chs:
     movb %ah, %al
     shlb $6, %al
     orb %al, %cl                /* %cl[7:6] = %ch[7:6] = cylindar[9:8] */
-
     # ret
 
 read_sectors:
     pushw %si
     movw %sp, %si
-    movb 4(%si), %al
-    movb $2, %ah
+    movb 4(%si), %al            /* retrieves lower 8 bytes of %cx as count %al */
+    movb $2, %ah                /* opcode for reading sector */
     popw %si
-    popw %bx
+    popw %bx                    /* %bx = destination address */
     movb boot_disk, %dl
-    addw $2, %sp
+    addw $2, %sp                /* %cx */
     int $0x13
     jc kernel_not_found
+
+    popw %dx
+    popw %ax
+    popl %esi
     ret
 
 kernel_not_found:
     movw $kernel_not_found_message, %bx
     call print_message
-    hlt
+    jmp halt
 
 kernel_name:
     .ascii "CYAN"
@@ -284,7 +266,7 @@ boot_disk:
     .byte 0x00
 
 .align 4
-dentry_size:
+fat32_dentry_size:
     .word 32
 gdt32:
     .word gdt32_end - gdt32_begin - 1
@@ -302,9 +284,9 @@ gdt32_segments:                 /* segmentation is out-dated, and should retire 
 
 gdt32_end:
 
-fat32_data_block_offset:
-    .word 4126
-    
+fat32_data_block_offset:        /* 32 + 2048 * 2 */
+    .long 4126
+
 .org 0x1FE                      /* indicating the partition is bootable */
     .byte 0x55
     .byte 0xAA
