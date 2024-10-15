@@ -1,5 +1,6 @@
 ./build/
 ./gnu-efi/
+./.vscode
 *.o
 *.bin
 *.img

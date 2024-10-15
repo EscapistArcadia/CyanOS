@@ -1,7 +1,0 @@
-{
-    "files.associations": {
-        "efi.h": "c",
-        "efilib.h": "c",
-        "elf.h": "c"
-    }
-}
