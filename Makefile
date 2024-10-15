@@ -28,6 +28,8 @@ BOOT_LDFLAGS += -shared -Bsymbolic -L $(EFI_ARCH)/lib/ -L $(EFI_ARCH)/gnuefi/ -T
 
 KERNEL_CFLAGS += -g -Wall -fno-builtin -fno-stack-protector -mno-red-zone -nostdlib -m64
 
+KERNEL_LDFLAGS += -ffreestanding -nostdlib -static
+
 all: bootloader filesys kernimg
 
 bootloader:
@@ -47,11 +49,11 @@ $(BUILD_DIR)/%.o: $(KERNEL_DIR)/%.c
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
 kernimg: $(KERNEL_OBJS)
-	$(LD) -o $(BUILD_DIR)/cyan.elf -T $(KERNEL_DIR)/linker.ld $(KERNEL_OBJS)
+	$(CC) -T $(KERNEL_DIR)/linker.ld -o $(BUILD_DIR)/cyan.elf $(KERNEL_LDFLAGS) $(KERNEL_OBJS)
 	mcopy -i $(BUILD_DIR)/filesys.img $(BUILD_DIR)/cyan.elf ::/CYAN.EXE
 
 run:
-	qemu-system-$(ARCH) -drive format=raw,file=$(BUILD_DIR)/filesys.img -bios /usr/share/ovmf/OVMF.fd -S -s
+	qemu-system-$(ARCH) -drive format=raw,file=$(BUILD_DIR)/filesys.img -bios /usr/share/ovmf/OVMF.fd
 
 clean:
 	rm -rf $(BUILD_DIR)/*
