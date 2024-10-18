@@ -60,7 +60,8 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     /* **********************************************************************
      * *                Loads Kernel Executable into Memory                 *
      * ********************************************************************** */
-    UINTN kernel_file_info_size = sizeof(EFI_FILE_INFO) + 64, kernel_file_size = 0;
+    const UINTN kernel_file_info_size = sizeof(EFI_FILE_INFO) + 64;
+    UINTN kernel_file_size = 0;
     EFI_FILE_INFO *kernel_file_info = NULL;
     status = uefi_call_wrapper(SystemTable->BootServices->AllocatePool, 3, EfiLoaderData, kernel_file_info_size, (void **)&kernel_file_info);
     if (EFI_ERROR(status)) {                    /* gets the file size */
@@ -109,20 +110,10 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         Print(L"[%d] Status: %r\r\n", __LINE__, status);
         return status;
     }
-
-    Print(L"%lld\r\n", offsetof(Elf64_Ehdr, e_entry));
-
-    for (int i = 0; i < kernel_file_size; ++i) {
-        Print(L"0x%02x ", ((char *)kernel_address)[i]);
-        if (((char *)kernel_address)[i] == 0xCF) {
-            Print(L"\r\n Address: %p\r\n", kernel_address + i);
-            break;
-        }
-    }
-
+    
     Elf64_Ehdr *kernel_header = (Elf64_Ehdr *)kernel_address;
     void (*kmain)() = (void (*)())(kernel_header->e_entry);
-    Print(L"\r\n %lld Entry: %p\r\n", sizeof(Elf64_Ehdr), kmain);
+    Print(L"\r\n Entry: %p\r\n", kmain);
 
     /* **********************************************************************
      * *                Exit the Service and Jump to Kernel                 *

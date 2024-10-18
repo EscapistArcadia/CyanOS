@@ -26,7 +26,7 @@ BOOT_CFLAGS  += -nostdlib -fno-builtin -fpic -ffreestanding -fno-stack-protector
 
 BOOT_LDFLAGS += -shared -Bsymbolic -L $(EFI_ARCH)/lib/ -L $(EFI_ARCH)/gnuefi/ -T $(EFI_DIR)/gnuefi/elf_$(ARCH)_efi.lds $(EFI_DIR)/$(ARCH)/gnuefi/crt0-efi-$(ARCH).o
 
-KERNEL_CFLAGS += -g -Wall -fno-builtin -fno-stack-protector -mno-red-zone -nostdlib -m64
+KERNEL_CFLAGS += -g -Wall -fno-builtin -fno-stack-protector -mno-red-zone -nostdlib -m64 -I $(KERNEL_DIR)/include
 
 KERNEL_LDFLAGS += -ffreestanding -nostdlib -static
 
@@ -53,7 +53,7 @@ kernimg: $(KERNEL_OBJS)
 	mcopy -i $(BUILD_DIR)/filesys.img $(BUILD_DIR)/cyan.elf ::/CYAN.EXE
 
 run:
-	qemu-system-$(ARCH) -drive format=raw,file=$(BUILD_DIR)/filesys.img -bios /usr/share/ovmf/OVMF.fd
+	qemu-system-$(ARCH) -drive format=raw,file=$(BUILD_DIR)/filesys.img -bios /usr/share/ovmf/OVMF.fd -S -s
 
 clean:
 	rm -rf $(BUILD_DIR)/*
